@@ -1,0 +1,61 @@
+replicaCount: 2
+
+image:
+  repository: cloudphoenix/service-a
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8080
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: service-a.cloudphoenix.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 80
+
+livenessProbe:
+  httpGet:
+    path: /live
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+env:
+  DB_HOST: ""
+  DB_PORT: "5432"
+  DB_NAME: "cloudphoenix"
+  DB_USER: ""
+  AWS_REGION: "us-east-1"
+
+nodeSelector: {}
+tolerations: []
+affinity: {}
+

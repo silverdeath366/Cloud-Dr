@@ -1,0 +1,11 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: cloudphoenix-config
+  namespace: cloudphoenix
+data:
+  AWS_REGION: "us-east-1"
+  AZURE_LOCATION: "eastus"
+  PROJECT_NAME: "cloudphoenix"
+  LOG_LEVEL: "INFO"
+

@@ -1,0 +1,22 @@
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: service-a-pdb
+  namespace: cloudphoenix
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: service-a
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: service-b-pdb
+  namespace: cloudphoenix
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app.kubernetes.io/name: service-b
+

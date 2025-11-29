@@ -1,0 +1,62 @@
+# Terraform
+*.tfstate
+*.tfstate.*
+.terraform/
+.terraform.lock.hcl
+terraform.tfvars
+*.tfvars
+!example.tfvars
+
+# Secrets and credentials
+*.pem
+*.key
+*.crt
+*.cert
+secrets/
+.env
+.env.*
+!.env.example
+*.secret
+*credentials*
+*password*
+*api_key*
+*token*
+*.tfvars
+!example.tfvars
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Logs
+*.log
+logs/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+
+# Jenkins
+.jenkins/
+
+# Kubernetes
+kubeconfig
+*.kubeconfig
+
+# Temporary files
+tmp/
+temp/
+*.tmp
+

@@ -1,0 +1,201 @@
+// CloudPhoenix DR Orchestration Pipeline
+// Jenkins Scripted Pipeline for Multi-Cloud Failover
+
+def awsRegion = env.AWS_REGION ?: 'us-east-1'
+def azureLocation = env.AZURE_LOCATION ?: 'eastus'
+def projectName = env.PROJECT_NAME ?: 'cloudphoenix'
+
+pipeline {
+    agent any
+    
+    parameters {
+        choice(
+            name: 'ACTION',
+            choices: ['health_check', 'app_self_healing', 'region_failover', 'dr_failover', 'rollback'],
+            description: 'Action to perform'
+        )
+        booleanParam(
+            name: 'DRY_RUN',
+            defaultValue: false,
+            description: 'Dry run mode (no actual changes)'
+        )
+    }
+    
+    environment {
+        AWS_DEFAULT_REGION = "${awsRegion}"
+        KUBECONFIG_AWS = credentials('aws-kubeconfig')
+        KUBECONFIG_AZURE = credentials('azure-kubeconfig')
+        N8N_WEBHOOK_URL = credentials('n8n-webhook-url')
+    }
+    
+    stages {
+        stage('Initialize') {
+            steps {
+                script {
+                    echo "CloudPhoenix DR Pipeline - Action: ${params.ACTION}"
+                    echo "Dry Run: ${params.DRY_RUN}"
+                    currentBuild.displayName = "#${BUILD_NUMBER} - ${params.ACTION}"
+                }
+            }
+        }
+        
+        stage('Health Check') {
+            steps {
+                script {
+                    echo "Running health checks..."
+                    sh '''
+                        python3 scripts/healthcheck.py > /tmp/health_report.json
+                        cat /tmp/health_report.json
+                    '''
+                    
+                    def healthReport = readJSON file: '/tmp/health_report.json'
+                    def score = healthReport.score
+                    def failoverLevel = healthReport.failover_level
+                    
+                    echo "Health Score: ${score}"
+                    echo "Failover Level: ${failoverLevel}"
+                    
+                    // Store for later stages
+                    env.HEALTH_SCORE = "${score}"
+                    env.FAILOVER_LEVEL = "${failoverLevel}"
+                }
+            }
+        }
+        
+        stage('Decision') {
+            steps {
+                script {
+                    def action = params.ACTION
+                    def healthScore = env.HEALTH_SCORE.toInteger()
+                    def failoverLevel = env.FAILOVER_LEVEL
+                    
+                    if (action == 'health_check') {
+                        echo "Health check complete. Score: ${healthScore}, Level: ${failoverLevel}"
+                        return
+                    }
+                    
+                    if (action == 'app_self_healing') {
+                        echo "Triggering application self-healing..."
+                        sh './cicd/failover.sh --level app_self_healing'
+                    }
+                    
+                    if (action == 'region_failover') {
+                        echo "Triggering region-level failover..."
+                        sh './cicd/failover.sh --level region_failover'
+                    }
+                    
+                    if (action == 'dr_failover') {
+                        echo "Triggering DR failover to Azure..."
+                        stage('DR: Sync Data') {
+                            sh './scripts/replicate_db.sh'
+                            sh './scripts/sync_s3.sh'
+                        }
+                        
+                        stage('DR: Provision Azure') {
+                            dir('terraform/azure') {
+                                if (!params.DRY_RUN) {
+                                    sh 'terraform init'
+                                    sh 'terraform plan'
+                                    sh 'terraform apply -auto-approve'
+                                } else {
+                                    echo "DRY RUN: Would provision Azure infrastructure"
+                                }
+                            }
+                        }
+                        
+                        stage('DR: Deploy Services') {
+                            // Deploy frontend
+                            sh 'helm install frontend k8s/helm/frontend --kubeconfig ${KUBECONFIG_AZURE} --namespace cloudphoenix --create-namespace --set image.repository=${AZURE_ACR_URL}/frontend || helm upgrade frontend k8s/helm/frontend --kubeconfig ${KUBECONFIG_AZURE} --namespace cloudphoenix --set image.repository=${AZURE_ACR_URL}/frontend'
+                            
+                            // Deploy backend services
+                            sh '''
+                                export KUBECONFIG=${KUBECONFIG_AZURE}
+                                helm upgrade --install service-a k8s/helm/service-a
+                                helm upgrade --install service-b k8s/helm/service-b
+                            '''
+                        }
+                        
+                        stage('DR: Switch DNS') {
+                            sh './scripts/switch_dns.sh --target azure'
+                        }
+                        
+                        stage('DR: Verify') {
+                            sh './scripts/verify_services.sh'
+                        }
+                        
+                        stage('DR: Notify') {
+                            script {
+                                if (env.N8N_WEBHOOK_URL) {
+                                    sh """
+                                        curl -X POST ${N8N_WEBHOOK_URL} \\
+                                            -H 'Content-Type: application/json' \\
+                                            -d '{
+                                                "event": "dr_failover_completed",
+                                                "timestamp": "$(date -u +%Y-%m-%dT%H:%M:%SZ)",
+                                                "action": "${action}",
+                                                "health_score": "${env.HEALTH_SCORE}"
+                                            }'
+                                    """
+                                }
+                            }
+                        }
+                    }
+                    
+                    if (action == 'rollback') {
+                        echo "Rolling back to AWS..."
+                        stage('Rollback: Switch DNS') {
+                            sh './scripts/switch_dns.sh --target aws'
+                        }
+                        
+                        stage('Rollback: Verify') {
+                            sh './scripts/verify_services.sh'
+                        }
+                    }
+                }
+            }
+        }
+        
+        stage('Post-Action') {
+            steps {
+                script {
+                    echo "Action ${params.ACTION} completed"
+                    
+                    // Archive artifacts
+                    archiveArtifacts artifacts: '/tmp/health_report.json', allowEmptyArchive: true
+                    
+                    // Publish test results if available
+                    publishTestResults testResultsPattern: 'test-results/*.xml', allowEmptyResults: true
+                }
+            }
+        }
+    }
+    
+    post {
+        always {
+            script {
+                echo "Pipeline completed"
+            }
+        }
+        success {
+            echo "Pipeline succeeded"
+        }
+        failure {
+            script {
+                echo "Pipeline failed"
+                // Send notification
+                if (env.N8N_WEBHOOK_URL) {
+                    sh """
+                        curl -X POST ${N8N_WEBHOOK_URL} \\
+                            -H 'Content-Type: application/json' \\
+                            -d '{
+                                "event": "pipeline_failed",
+                                "build_number": "${BUILD_NUMBER}",
+                                "action": "${params.ACTION}"
+                            }'
+                    """
+                }
+            }
+        }
+    }
+}
+
